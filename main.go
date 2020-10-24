@@ -158,6 +158,6 @@ func marshalObjectToJsonFile(path string, v interface{}) {
 	f.Close()
 }
 func main() {
-	f := ProcessEachInstanceEntryInDir(os.Args[1], "file")
+	f := ProcessEachInstanceEntryInDir(os.Args[1], "instance_usage")
 	marshalObjectToJsonFile("usage_histogram.json.gz", *f)
 }
