@@ -84,7 +84,6 @@ type MemInfo struct {
 }
 
 func (hp *UsageHistogram) add(u *google_cluster_data.InstanceUsage) {
-	log.Println("\n\nu.starttime: ", u.GetStartTime())
 	const slotSize = 300 * 1000000
 	slot := *u.StartTime / slotSize
 	v, exists := hp.H[slot]
@@ -107,7 +106,6 @@ func GenerateHistogramFromStream(c chan google_cluster_data.InstanceUsage, outCh
 	}
 	i := 0
 	for l := range c {
-		log.Println("i: ", i)
 		m.add(&l)
 		i++
 	}
