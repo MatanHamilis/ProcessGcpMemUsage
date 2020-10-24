@@ -32,6 +32,7 @@ func ParseInstanceUsage(c chan google_cluster_data.InstanceUsage, s *bufio.Scann
 	i := 0
 	for s.Scan() != false {
 		t := strings.Replace(s.Text(), "collection_type\":\"0\"", "collection_type\":0", 1)
+		t = strings.Replace(t, "collection_type\":\"1\"", "collection_type\":1", 1)
 		b := []byte(t)
 		err := protojson.Unmarshal(b, &v)
 		if err != nil {
