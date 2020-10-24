@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 )
 
 type InstanceUsage google_cluster_data.InstanceUsage
@@ -27,30 +28,37 @@ func ParseCollectionEvents(c chan google_cluster_data.CollectionEvent, s *bufio.
 	close(c)
 }
 
-func ParseInstanceUsage(c chan google_cluster_data.InstanceUsage, s *bufio.Scanner) {
+func ParseInstanceUsage(c chan google_cluster_data.InstanceUsage, f chan string, wg *sync.WaitGroup) {
 	var v google_cluster_data.InstanceUsage
 	i := 0
-	for s.Scan() != false {
-		t := strings.Replace(s.Text(), "collection_type\":\"0\"", "collection_type\":0", 1)
-		t = strings.Replace(t, "collection_type\":\"1\"", "collection_type\":1", 1)
-		b := []byte(t)
-		err := protojson.Unmarshal(b, &v)
-		if err != nil {
-			log.Println(t)
+	for file := range f {
+		log.Println("Processing file: ", file)
+		s := GenerateGzipScanner(file)
+		for s.Scan() != false {
+			t := strings.Replace(s.Text(), "collection_type\":\"0\"", "collection_type\":0", 1)
+			t = strings.Replace(t, "collection_type\":\"1\"", "collection_type\":1", 1)
+			b := []byte(t)
+			err := protojson.Unmarshal(b, &v)
+			if err != nil {
+				log.Println(t)
+			}
+			if v.CollectionType == google_cluster_data.CollectionType_ALLOC_SET.Enum() {
+				continue
+			}
+			if v.AverageUsage == nil {
+				continue
+			}
+			if v.StartTime == nil {
+				log.Println("Start Time Nil: ", v)
+			}
+			if v.GetAssignedMemory() == 0 {
+				continue
+			}
+			c <- v
+			i++
 		}
-		if v.CollectionType == google_cluster_data.CollectionType_ALLOC_SET.Enum() {
-			continue
-		}
-		if v.AverageUsage == nil {
-			continue
-		}
-		if v.StartTime == nil {
-			log.Println("Start Time Nil: ", v)
-		}
-		c <- v
-		i++
 	}
-	close(c)
+	wg.Done()
 }
 
 func IterateFilesInDir(p string, filter string, c chan string) {
@@ -101,7 +109,7 @@ func (hp *UsageHistogram) add(u *google_cluster_data.InstanceUsage) {
 	hp.H[slot] = append(v, memInfo)
 }
 
-func GenerateHistogramFromStream(c chan google_cluster_data.InstanceUsage, outChan chan *UsageHistogram) {
+func GenerateHistogramFromStream(c chan google_cluster_data.InstanceUsage, outChan chan *UsageHistogram, wg *sync.WaitGroup) {
 	m := &UsageHistogram{
 		H: make(map[int64][]MemInfo),
 	}
@@ -111,6 +119,7 @@ func GenerateHistogramFromStream(c chan google_cluster_data.InstanceUsage, outCh
 		i++
 	}
 	outChan <- m
+	wg.Done()
 }
 
 func (into *UsageHistogram) MergeHistograms(from *UsageHistogram) {
@@ -124,39 +133,46 @@ func (into *UsageHistogram) MergeHistograms(from *UsageHistogram) {
 	}
 }
 
-func ProcessEachInstanceEntryInDir(dir string, filter string) *UsageHistogram {
-	c := make(chan string)
-	go IterateFilesInDir(dir, filter, c)
-	outputChan := make(chan *UsageHistogram)
-	i := 0
-	for f := range c {
-		i++
-		log.Println("Found File: ", f)
-		evtChan := make(chan google_cluster_data.InstanceUsage)
-		go ParseInstanceUsage(evtChan, GenerateGzipScanner(f))
-		go GenerateHistogramFromStream(evtChan, outputChan)
-	}
+func ProcessEachInstanceEntryInDir(dir string, filter string) chan *UsageHistogram {
+	histChan := make(chan *UsageHistogram)
+	go func() {
+		c := make(chan string)
+		go IterateFilesInDir(dir, filter, c)
 
-	var totalHistogram *UsageHistogram
-	totalHistogram = <-outputChan
+		const numOfReaders = 40
+		var instanceUsageWg sync.WaitGroup
+		var histGenWg sync.WaitGroup
+		instanceUsageWg.Add(numOfReaders)
+		histGenWg.Add(numOfReaders)
+		instanceUsageChan := make(chan google_cluster_data.InstanceUsage)
+		for i := 0; i < numOfReaders; i++ {
+			go ParseInstanceUsage(instanceUsageChan, c, &instanceUsageWg)
+			go GenerateHistogramFromStream(instanceUsageChan, histChan, &histGenWg)
+		}
 
-	for ; i > 1; i-- {
-		totalHistogram.MergeHistograms(<-outputChan)
-	}
-	return totalHistogram
+		instanceUsageWg.Wait()
+		close(instanceUsageChan)
+		histGenWg.Wait()
+		close(histChan)
+	}()
+
+	return histChan
 }
 
 func marshalObjectToJsonFile(path string, v interface{}) {
-	log.Println(v)
 	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0755)
 	g := gzip.NewWriter(f)
-	j := json.NewEncoder(f)
+	j := json.NewEncoder(g)
 	j.SetIndent("", "    ")
 	j.Encode(v)
 	g.Close()
 	f.Close()
 }
 func main() {
-	f := ProcessEachInstanceEntryInDir(os.Args[1], "instance_usage")
-	marshalObjectToJsonFile("usage_histogram.json.gz", *f)
+	histChan := ProcessEachInstanceEntryInDir(os.Args[1], "instance_usage")
+	hist := <-histChan
+	for h := range histChan {
+		hist.MergeHistograms(h)
+	}
+	marshalObjectToJsonFile("usage_histogram.json.gz", *hist)
 }
