@@ -71,18 +71,22 @@ func ParseInstanceUsage(histChan chan *UsageHistogram, f chan string, wg *sync.W
 	wg.Done()
 }
 
-func IterateFilesInDir(p string, filter string, c chan string) {
-	d, _ := ioutil.ReadDir(p)
-	for _, f := range d {
-		if f.IsDir() {
-			continue
+func IterateFilesInDir(p string, filter string) chan string {
+	c := make(chan string)
+	go func() {
+		d, _ := ioutil.ReadDir(p)
+		for _, f := range d {
+			if f.IsDir() {
+				continue
+			}
+			if !strings.Contains(f.Name(), filter) {
+				continue
+			}
+			c <- path.Join(p, f.Name())
 		}
-		if !strings.Contains(f.Name(), filter) {
-			continue
-		}
-		c <- path.Join(p, f.Name())
-	}
-	close(c)
+		close(c)
+	}()
+	return c
 }
 
 func GenerateGzipScanner(path string) (*bufio.Scanner, *os.File, *gzip.Reader) {
@@ -146,8 +150,7 @@ func (into *UsageHistogram) MergeHistograms(from *UsageHistogram) {
 func ProcessEachInstanceEntryInDir(dir string, filter string) chan *UsageHistogram {
 	histChan := make(chan *UsageHistogram)
 	go func() {
-		c := make(chan string)
-		go IterateFilesInDir(dir, filter, c)
+		c := IterateFilesInDir(dir, filter)
 
 		const numOfReaders = 40
 		var instanceUsageWg sync.WaitGroup
@@ -172,11 +175,89 @@ func marshalObjectToJsonFile(path string, v interface{}) {
 	g.Close()
 	f.Close()
 }
-func main() {
+
+func UnmarshalObjectFiles(c chan string) chan *UsageHistogram {
+	l := make(chan *UsageHistogram)
+	go func() {
+		for p := range c {
+			v := &UsageHistogram{
+				H: make(map[int64][]MemInfo),
+			}
+			f, _ := os.Open(p)
+			g, _ := gzip.NewReader(f)
+			d := json.NewDecoder(g)
+			d.Decode(v)
+			l <- v
+
+		}
+		close(l)
+	}()
+	return l
+}
+
+type HistInfo struct {
+	m MemInfo
+	s int64
+}
+
+func EmitMemInfo(uc chan *UsageHistogram) chan HistInfo {
+	h := make(chan HistInfo)
+
+	go func() {
+		for u := range uc {
+			for slot, slot_map := range u.H {
+				for _, mem_info := range slot_map {
+					h <- HistInfo{
+						m: mem_info,
+						s: slot,
+					}
+				}
+			}
+		}
+		close(h)
+	}()
+	return h
+}
+
+func GenerateMemoryHistogram() {
 	histChan := ProcessEachInstanceEntryInDir(os.Args[1], "instance_usage")
 	i := 0
 	for h := range histChan {
 		marshalObjectToJsonFile("usage_histogram_"+strconv.Itoa(i)+".json.gz", *h)
 		i++
 	}
+}
+
+type MemDescriptor struct {
+	Usage float32
+	Max   float32
+}
+type TotalMemoryUsage map[int64]*MemDescriptor
+
+func (tmu TotalMemoryUsage) addToHist(hist_info *HistInfo) {
+	_, present := tmu[hist_info.s]
+	if !present {
+		tmu[hist_info.s] = &MemDescriptor{
+			Usage: 0,
+			Max:   0,
+		}
+	}
+	tmu[hist_info.s].Usage += hist_info.m.AvgUsing
+	tmu[hist_info.s].Max += hist_info.m.MaxAvail
+}
+
+func GenerateTotalHistogram(histDir string, output string) {
+	c := IterateFilesInDir(histDir, "")
+	l := UnmarshalObjectFiles(c)
+	hist_entries := EmitMemInfo(l)
+	supply_function := make(TotalMemoryUsage)
+	for entry := range hist_entries {
+		supply_function.addToHist(&entry)
+	}
+	marshalObjectToJsonFile(output, supply_function)
+}
+
+func main() {
+	GenerateTotalHistogram(os.Args[1], os.Args[2])
+
 }
