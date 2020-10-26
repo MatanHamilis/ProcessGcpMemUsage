@@ -178,21 +178,29 @@ func marshalObjectToJsonFile(path string, v interface{}) {
 
 func UnmarshalObjectFiles(c chan string) chan *UsageHistogram {
 	l := make(chan *UsageHistogram)
-	go func() {
-		for p := range c {
-			log.Println("Current file: ", p)
-			v := &UsageHistogram{
-				H: make(map[int64][]MemInfo),
-			}
-			f, _ := os.Open(p)
-			g, _ := gzip.NewReader(f)
-			d := json.NewDecoder(g)
-			d.Decode(v)
-			l <- v
-			g.Close()
-			f.Close()
+	var wg sync.WaitGroup
+	wg.Add(10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			for p := range c {
+				log.Println("Current file: ", p)
+				v := &UsageHistogram{
+					H: make(map[int64][]MemInfo),
+				}
+				f, _ := os.Open(p)
+				g, _ := gzip.NewReader(f)
+				d := json.NewDecoder(g)
+				d.Decode(v)
+				l <- v
+				g.Close()
+				f.Close()
 
-		}
+			}
+			wg.Done()
+		}()
+	}
+	go func() {
+		wg.Wait()
 		close(l)
 	}()
 	return l
@@ -206,17 +214,26 @@ type HistInfo struct {
 func EmitMemInfo(uc chan *UsageHistogram) chan HistInfo {
 	h := make(chan HistInfo)
 
-	go func() {
-		for u := range uc {
-			for slot, slot_map := range u.H {
-				for _, mem_info := range slot_map {
-					h <- HistInfo{
-						m: mem_info,
-						s: slot,
+	var wg sync.WaitGroup
+	wg.Add(10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			for u := range uc {
+				for slot, slot_map := range u.H {
+					for _, mem_info := range slot_map {
+						h <- HistInfo{
+							m: mem_info,
+							s: slot,
+						}
 					}
 				}
 			}
-		}
+			wg.Done()
+		}()
+	}
+
+	go func() {
+		wg.Wait()
 		close(h)
 	}()
 	return h
