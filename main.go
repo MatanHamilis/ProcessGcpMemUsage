@@ -180,6 +180,7 @@ func UnmarshalObjectFiles(c chan string) chan *UsageHistogram {
 	l := make(chan *UsageHistogram)
 	go func() {
 		for p := range c {
+			log.Println("Current file: ", p)
 			v := &UsageHistogram{
 				H: make(map[int64][]MemInfo),
 			}
@@ -188,6 +189,8 @@ func UnmarshalObjectFiles(c chan string) chan *UsageHistogram {
 			d := json.NewDecoder(g)
 			d.Decode(v)
 			l <- v
+			g.Close()
+			f.Close()
 
 		}
 		close(l)
