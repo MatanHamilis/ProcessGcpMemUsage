@@ -278,6 +278,7 @@ func GenerateTotalHistogram(histDir string, output string) {
 }
 
 func main() {
-	GenerateTotalHistogram(os.Args[1], os.Args[2])
+	GenerateMemoryHistogram()
+	// GenerateTotalHistogram(os.Args[1], os.Args[2])
 
 }
