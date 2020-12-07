@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -87,11 +86,14 @@ func iterateFilesInDir(p string, filter string) chan string {
 }
 
 func marshalObjectToJSONFile(path string, v interface{}) {
-	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		log.Panic("Failed to open file")
+	}
 	g := gzip.NewWriter(f)
 	j := json.NewEncoder(g)
 	j.SetIndent("", "\t")
-	err := j.Encode(v)
+	err = j.Encode(v)
 	if err != nil {
 		panic("Failed to encode object to json")
 	}
@@ -154,12 +156,10 @@ func decodeMrcJSON(jsonFileChan io.Reader) map[int]*mrc {
 	rawMrc := make(map[string]mrc)
 	mrc := make(map[int]*mrc)
 	j.Decode(&rawMrc)
-	for k, v := range rawMrc {
-		key, err := strconv.Atoi(k)
-		if err != nil {
-			log.Panic("Failed to decode mrc json! Key is not an integer")
-		}
-		mrc[key] = &v
+	i := 0
+	for _, v := range rawMrc {
+		mrc[i] = &v
+		i++
 	}
 	return mrc
 }

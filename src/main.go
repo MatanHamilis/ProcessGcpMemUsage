@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"google_cluster_project/TaskId"
 	"google_cluster_project/google_cluster_data"
 	"google_cluster_project/meminfo"
@@ -412,13 +413,12 @@ func IsGoingToBeConsumer() chan bool {
 // generateConsumerProducerMatching Returns (set_of_consumers, set_of_producers, matching function.
 // The matching function states for each time slot and for each task - its pairing.
 
-func generateConsumerProducerMatching(consolidatedHistogramDir string) *matchingFunction {
+func generateConsumerProducerMatching(mrcPath, consolidatedHistogramDir string) *matchingFunction {
 	mf := createEmpty()
 	numberOfFiles := countChanString(iterateFilesInDir(consolidatedHistogramDir, histogramPartPrefix))
 	for fileIdx := 0; fileIdx < numberOfFiles; fileIdx++ {
 		fileName := histogramPartPrefix + strconv.Itoa(fileIdx) + ".json.gz"
 		filePath := path.Join(consolidatedHistogramDir, fileName)
-		log.Println("Opened ", filePath)
 		fileHist := unmarshalHistogramFile(filePath)
 		histKeys := make([]int64, 0)
 		for k := range fileHist {
@@ -430,6 +430,7 @@ func generateConsumerProducerMatching(consolidatedHistogramDir string) *matching
 		}
 
 	}
+	mf.setMrc(mrcPath)
 	return mf
 }
 
@@ -437,27 +438,28 @@ type (
 	fullSimulationResultsStruct []simulationResultsStruct
 	simulationResultsStruct     struct {
 		RandomSeed          uint32
-		SlotAnalyses        map[int64]*slotUsageStatus
+		SlotAnalyses        map[int64]slotUsageStatus
 		AcceptableMissRatio float32
 	}
 )
 
 func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcceptableMissRatio, toAcceptableMissRatio, stepAcceptableMissRatio float32) *fullSimulationResultsStruct {
-	mf := generateConsumerProducerMatching(consolidatedHistogramDir)
-	mf.setMrc(mrcsPath)
-	fullSimulationResults := fullSimulationResultsStruct(make([]simulationResultsStruct, 1))
+	mf := generateConsumerProducerMatching(mrcsPath, consolidatedHistogramDir)
+	fullSimulationResults := fullSimulationResultsStruct(make([]simulationResultsStruct, 0))
 	for acceptableMissRatio := fromAcceptableMissRatio; acceptableMissRatio < toAcceptableMissRatio; acceptableMissRatio += stepAcceptableMissRatio {
-		mf.setAcceptableMissRation(acceptableMissRatio)
+		mf.setAcceptableMissRatio(acceptableMissRatio)
 		simulationResults := simulationResultsStruct{
 			RandomSeed:          randomSeed,
-			SlotAnalyses:        make(map[int64]*slotUsageStatus),
+			SlotAnalyses:        make(map[int64]slotUsageStatus),
 			AcceptableMissRatio: acceptableMissRatio,
 		}
 
 		for slot := range mf.Match {
+			fmt.Printf("\rAnalyzing Slot: %d", slot)
 			slotAnalysis := mf.analyzeSlot(slot)
-			simulationResults.SlotAnalyses[slot] = &slotAnalysis
+			simulationResults.SlotAnalyses[slot] = slotAnalysis
 		}
+		fmt.Printf("\n")
 		fullSimulationResults = append(fullSimulationResults, simulationResults)
 	}
 

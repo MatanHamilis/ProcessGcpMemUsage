@@ -1,10 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"google_cluster_project/TaskId"
 	"google_cluster_project/meminfo"
 	"google_cluster_project/void"
-	"log"
 	"math/rand"
 )
 
@@ -45,6 +45,10 @@ func (mf *matchingFunction) setMrc(file string) {
 	tasksMaxMemUsage := make(map[TaskId.TaskId]float32)
 	for _, slotMatchingFunction := range mf.Match {
 		for task, taskMeminfo := range slotMatchingFunction.AllMemoryInfo {
+			_, present := tasksMaxMemUsage[task]
+			if !present {
+				tasksMaxMemUsage[task] = float32(0)
+			}
 			if taskMeminfo.MaxUsage > tasksMaxMemUsage[task] {
 				tasksMaxMemUsage[task] = taskMeminfo.MaxUsage
 			}
@@ -60,7 +64,7 @@ func (mf *matchingFunction) setMrc(file string) {
 	}
 }
 
-func (mf *matchingFunction) setAcceptableMissRation(acceptableMissRatio float32) {
+func (mf *matchingFunction) setAcceptableMissRatio(acceptableMissRatio float32) {
 	for k := range mf.MrcMatching {
 		mrcID := mf.MrcMatching[k].mrcID
 		maxMem := mf.MrcMatching[k].maxMem
@@ -145,8 +149,8 @@ func shuffleMemInfo(ms []meminfo.MemInfo) {
 }
 
 func (mf *matchingFunction) assignRoles(slotInfo []meminfo.MemInfo) ([]meminfo.MemInfo, []meminfo.MemInfo) {
-	consumers := make([]meminfo.MemInfo, len(slotInfo)/2)
-	producers := make([]meminfo.MemInfo, len(slotInfo)/2)
+	consumers := make([]meminfo.MemInfo, 0)
+	producers := make([]meminfo.MemInfo, 0)
 	for _, s := range slotInfo {
 		if randomizeBit() {
 			consumers = append(consumers, s)
@@ -175,7 +179,9 @@ func (mf *matchingFunction) doMatch(consumers, producers []meminfo.MemInfo, slot
 
 func createEmpty() *matchingFunction {
 	mf := &matchingFunction{
-		Match: make(map[int64]singleSlotMatchingFunction),
+		Match:       make(map[int64]singleSlotMatchingFunction),
+		MrcMatching: make(map[TaskId.TaskId]*taskMrcInfo),
+		Mrcs:        make(map[int]*mrc),
 	}
 	return mf
 }
@@ -218,9 +224,10 @@ func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo) {
 		}
 	}
 	currentSlot := lastSlot + 1
-	if currentSlot%1000 == 0 {
-		log.Println("Initializing slot:", currentSlot)
+	if currentSlot%10 == 0 {
+		fmt.Printf("\rInitializing slot: %d", currentSlot)
 	}
+
 	mf.initSlot(currentSlot, slotInfo)
 	for c := range slotInfo {
 		cTask := meminfo.ToTaskId(c)
@@ -321,15 +328,19 @@ func (mf *matchingFunction) getProducerUtilizationRateAtSlot(producer TaskId.Tas
 		return 0
 	}
 	usage := mf.getConsumerRemoteUsage(match, slot)
+	supply := mf.getProducerSupply(producer, slot)
+	if supply == 0 {
+		return float32(1.0)
+	}
 	return usage / mf.getProducerSupply(producer, slot)
 }
 
 type slotUsageStatus struct {
-	demand           float32
-	supply           float32
-	satisfactionRate float32
-	utilizationRate  float32
-	averageMissRatio float32
+	Demand           float32
+	Supply           float32
+	SatisfactionRate float32
+	UtilizationRate  float32
+	AverageMissRatio float32
 }
 
 func (mf *matchingFunction) analyzeSlot(slot int64) slotUsageStatus {
@@ -339,34 +350,34 @@ func (mf *matchingFunction) analyzeSlot(slot int64) slotUsageStatus {
 	missRatioSum := float32(0)
 	missRatioCount := 0
 	for c := range mf.Match[slot].ConsumerMatch {
-		res.demand += mf.getRemoteDemand(c, slot)
+		res.Demand += mf.getRemoteDemand(c, slot)
 		sumSatisfactionRate += mf.getConsumerSatisfactionRateAtSlot(c, slot)
 		countSatisfactionRate++
 		missRatioSum += mf.getConsumerMissRatioAtSlot(c, slot)
 		missRatioCount++
 	}
 	for c := range mf.Match[slot].ConsumerNoMatch {
-		res.demand += mf.getRemoteDemand(c, slot)
+		res.Demand += mf.getRemoteDemand(c, slot)
 		sumSatisfactionRate += mf.getConsumerSatisfactionRateAtSlot(c, slot)
 		countSatisfactionRate++
 		missRatioSum += mf.getConsumerMissRatioAtSlot(c, slot)
 		missRatioCount++
 	}
-	res.satisfactionRate = sumSatisfactionRate / float32(countSatisfactionRate)
-	res.averageMissRatio = missRatioSum / float32(missRatioCount)
+	res.SatisfactionRate = sumSatisfactionRate / float32(countSatisfactionRate)
+	res.AverageMissRatio = missRatioSum / float32(missRatioCount)
 
 	utilizationCount := 0
 	utilizationSum := float32(0)
 	for p := range mf.Match[slot].ProducerMatch {
-		res.supply += mf.getProducerSupply(p, slot)
+		res.Supply += mf.getProducerSupply(p, slot)
 		utilizationSum += mf.getProducerUtilizationRateAtSlot(p, slot)
 		utilizationCount++
 	}
 	for p := range mf.Match[slot].ProducerNoMatch {
-		res.supply += mf.getProducerSupply(p, slot)
+		res.Supply += mf.getProducerSupply(p, slot)
 		utilizationCount++
 	}
-	res.utilizationRate = utilizationSum / float32(utilizationCount)
+	res.UtilizationRate = utilizationSum / float32(utilizationCount)
 
 	return res
 }
