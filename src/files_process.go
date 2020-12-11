@@ -187,5 +187,6 @@ func unmarshalHistogramFile(path string) map[int64]*memInfoWithSlot {
 }
 
 func marshalSimulationResult(fullSimulationResults *fullSimulationResultsStruct, path string) {
+	os.Remove(path)
 	marshalObjectToJSONFile(path, fullSimulationResults)
 }
