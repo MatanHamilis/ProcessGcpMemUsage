@@ -8,7 +8,6 @@ import (
 	"google_cluster_project/google_cluster_data"
 	"google_cluster_project/meminfo"
 	"hash/crc32"
-	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"strings"
 	"sync"
 
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -417,6 +417,7 @@ func generateConsumerProducerMatching(mrcPath, consolidatedHistogramDir string) 
 	mf := createEmpty()
 	numberOfFiles := countChanString(iterateFilesInDir(consolidatedHistogramDir, histogramPartPrefix))
 	for fileIdx := 0; fileIdx < numberOfFiles; fileIdx++ {
+		fmt.Printf("\rReading slots from file : %d", k)
 		fileName := histogramPartPrefix + strconv.Itoa(fileIdx) + ".json.gz"
 		filePath := path.Join(consolidatedHistogramDir, fileName)
 		fileHist := unmarshalHistogramFile(filePath)
@@ -430,6 +431,7 @@ func generateConsumerProducerMatching(mrcPath, consolidatedHistogramDir string) 
 		}
 
 	}
+	fmt.Printf("\n")
 	mf.setMrc(mrcPath)
 	return mf
 }
@@ -454,16 +456,27 @@ func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcc
 			AcceptableMissRatio: acceptableMissRatio,
 		}
 
+		slots := make([]int, 0)
 		for slot := range mf.Match {
+			slots = append(slots, int(slot))
+		}
+		sort.Ints(slots)
+		for slot := range slots {
 			fmt.Printf("\rAnalyzing Slot: %d", slot)
-			slotAnalysis := mf.analyzeSlot(slot)
-			simulationResults.SlotAnalyses[slot] = slotAnalysis
+			slotAnalysis := mf.analyzeSlot(int64(slot))
+			simulationResults.SlotAnalyses[int64(slot)] = slotAnalysis
 		}
 		fmt.Printf("\n")
 		fullSimulationResults = append(fullSimulationResults, simulationResults)
 	}
 
 	return &fullSimulationResults
+}
+
+func init() {
+	log.SetLevel(log.TraceLevel)
+	log.SetOutput(os.Stdout)
+	log.SetReportCaller(true)
 }
 
 func main() {

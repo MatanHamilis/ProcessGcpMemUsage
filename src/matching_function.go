@@ -1,11 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"google_cluster_project/TaskId"
 	"google_cluster_project/meminfo"
 	"google_cluster_project/void"
 	"math/rand"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type taskMrcInfo struct {
@@ -224,9 +225,6 @@ func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo) {
 		}
 	}
 	currentSlot := lastSlot + 1
-	if currentSlot%10 == 0 {
-		fmt.Printf("\rInitializing slot: %d", currentSlot)
-	}
 
 	mf.initSlot(currentSlot, slotInfo)
 	for c := range slotInfo {
@@ -305,7 +303,7 @@ func (mf *matchingFunction) getConsumerSatisfactionRateAtSlot(consumer TaskId.Ta
 	demand := mf.getRemoteDemand(consumer, slot)
 
 	// If there is no remote demand - we consider the consumer is fully satisfied.
-	if demand == float32(0) {
+	if demand <= float32(0) {
 		return 1
 	}
 	actualUsage := mf.getConsumerRemoteUsage(consumer, slot)
@@ -316,9 +314,26 @@ func (mf *matchingFunction) getMrc(task TaskId.TaskId) *mrc {
 	return mf.Mrcs[mf.MrcMatching[task].mrcID]
 }
 
+// To compute the miss ratio at a given slot for a given consumer we do the following:
+// 1. Calculate the remote *DEMAND* (i.e how much the consmer is willing to lend from the producer)
+// 2. Calculate how much memory is the consumer *ACTUALLY* consuming.
+// 3. Calculate the missing memory about by performing the subtraction of bullet #1 minus bullet #2.
+// 4. Normalize the amount of missed memory by deviding the missed memory by the maximal memory usage by this consumer.
+// 5. Calculate the normalized available memory as "1  - normalized_missed_memory"
+// 4. With the missing memory we want to know how much misses are experienced when this amount of memory is missing.
+// 	this is done using the mrc.
 func (mf *matchingFunction) getConsumerMissRatioAtSlot(consumer TaskId.TaskId, slot int64) float32 {
 	missAmount := mf.getRemoteDemand(consumer, slot) - mf.getConsumerRemoteUsage(consumer, slot)
-	normalizedAvailableMemory := 1.0 - missAmount/mf.getMaximalMemoryUsage(consumer, slot)
+	if missAmount < 0 {
+		missAmount = 0.0
+	}
+	normalizedAvailableMemory := float32(1.0)
+	if missAmount != 0.0 {
+		normalizedAvailableMemory -= missAmount / mf.getMaximalMemoryUsage(consumer, slot)
+	}
+	if normalizedAvailableMemory > 1.0 {
+		log.Trace("getMaximalMemoryUsage", mf.getMaximalMemoryUsage(consumer, slot), " missAmount ", missAmount)
+	}
 	return mf.getMrc(consumer).getMissRatioFromNormalizedAvailableMemory(normalizedAvailableMemory)
 }
 
@@ -329,7 +344,7 @@ func (mf *matchingFunction) getProducerUtilizationRateAtSlot(producer TaskId.Tas
 	}
 	usage := mf.getConsumerRemoteUsage(match, slot)
 	supply := mf.getProducerSupply(producer, slot)
-	if supply == 0 {
+	if supply <= 0 {
 		return float32(1.0)
 	}
 	return usage / mf.getProducerSupply(producer, slot)

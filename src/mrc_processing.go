@@ -1,5 +1,9 @@
 package main
 
+import (
+	log "github.com/sirupsen/logrus"
+)
+
 type mrc struct {
 	AppID      uint64
 	Size       uint64
@@ -44,6 +48,9 @@ func (m *mrc) getMinimalPercentageForMissRatio(missRatio float32) float32 {
 func (m *mrc) getMissRatioFromNormalizedAvailableMemory(normalizedAvailableMmory float32) float32 {
 	index := uint64(normalizedAvailableMmory * float32(m.Resolution-1))
 	sum := uint64(0)
+	if index > m.Resolution {
+		log.Trace("index ", index, " normalizedAvailableMmory ", normalizedAvailableMmory)
+	}
 	for i := uint64(0); i <= index; i++ {
 		sum += m.Hist[i]
 	}
