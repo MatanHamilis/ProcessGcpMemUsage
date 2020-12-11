@@ -12,5 +12,6 @@ else
 	export GOPATH=~/go
 	mkdir ~/go
 	ln -sf $(pwd)/.. ~/go/google_cluster_project
-	go get github.com/protocolbuffers/protobuf-go/encoding
+	go get google.golang.org/protobuf/encoding/protojson
+
 fi
