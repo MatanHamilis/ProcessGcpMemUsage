@@ -13,5 +13,6 @@ else
 	mkdir ~/go
 	ln -sf $(pwd)/.. ~/go/google_cluster_project
 	go get google.golang.org/protobuf/encoding/protojson
+	go get github.com/sirupsen/logrus
 
 fi
