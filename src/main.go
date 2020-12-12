@@ -410,29 +410,53 @@ func IsGoingToBeConsumer() chan bool {
 	return output
 }
 
+func generateHistogramsFromHistogramDir(histogramDir string) chan *memInfoWithSlot {
+	retChan := make(chan *memInfoWithSlot)
+	go func() {
+		numberOfFiles := countChanString(iterateFilesInDir(histogramDir, histogramPartPrefix))
+		for fileIdx := 0; fileIdx < numberOfFiles; fileIdx++ {
+			fileName := histogramPartPrefix + strconv.Itoa(fileIdx) + ".json.gz"
+			filePath := path.Join(histogramDir, fileName)
+			fileHist := unmarshalHistogramFile(filePath)
+			histKeys := make([]int64, 0)
+			for k := range fileHist {
+				histKeys = append(histKeys, k)
+			}
+			sort.Slice(histKeys, func(i, j int) bool { return histKeys[i] < histKeys[j] })
+			i := 0
+			for _, k := range histKeys {
+				i++
+				retChan <- fileHist[k]
+			}
+
+		}
+		close(retChan)
+	}()
+
+	return retChan
+}
+
+func getTotalNumberOfSlots(histogramDir string) int {
+	num := 0
+	for _ = range generateHistogramsFromHistogramDir(histogramDir) {
+		num++
+	}
+	return num
+}
+
 // generateConsumerProducerMatching Returns (set_of_consumers, set_of_producers, matching function.
 // The matching function states for each time slot and for each task - its pairing.
 
 func generateConsumerProducerMatching(mrcPath, consolidatedHistogramDir string) *matchingFunction {
 	mf := createEmpty()
-	numberOfFiles := countChanString(iterateFilesInDir(consolidatedHistogramDir, histogramPartPrefix))
-	for fileIdx := 0; fileIdx < numberOfFiles; fileIdx++ {
-		fmt.Printf("\rReading slots from file : %d", k)
-		fileName := histogramPartPrefix + strconv.Itoa(fileIdx) + ".json.gz"
-		filePath := path.Join(consolidatedHistogramDir, fileName)
-		fileHist := unmarshalHistogramFile(filePath)
-		histKeys := make([]int64, 0)
-		for k := range fileHist {
-			histKeys = append(histKeys, k)
-		}
-		sort.Slice(histKeys, func(i, j int) bool { return histKeys[i] < histKeys[j] })
-		for _, k := range histKeys {
-			mf.nextSlotMatch(fileHist[k].MemInfo)
-		}
+	// totalHistograms := getTotalNumberOfSlots(consolidatedHistogramDir)
+	// for memInfo := range generateHistogramsFromHistogramDir(consolidatedHistogramDir) {
+	// fmt.Printf("\r Slot: %04d/%d", memInfo.Slot, totalHistograms)
 
-	}
-	fmt.Printf("\n")
-	mf.setMrc(mrcPath)
+	// mf.nextSlotMatch(memInfo.MemInfo)
+	// }
+	// fmt.Printf("\n")
+	mf.setMrc(mrcPath, consolidatedHistogramDir)
 	return mf
 }
 
@@ -449,7 +473,29 @@ func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcc
 	mf := generateConsumerProducerMatching(mrcsPath, consolidatedHistogramDir)
 	fullSimulationResults := fullSimulationResultsStruct(make([]simulationResultsStruct, 0))
 	for acceptableMissRatio := fromAcceptableMissRatio; acceptableMissRatio < toAcceptableMissRatio; acceptableMissRatio += stepAcceptableMissRatio {
-		mf.setAcceptableMissRatio(acceptableMissRatio)
+		fullSimulationResults = append(fullSimulationResults, simulationResultsStruct{
+			RandomSeed:          randomSeed,
+			AcceptableMissRatio: acceptableMissRatio,
+			SlotAnalyses:        make(map[int64]slotUsageStatus),
+		})
+	}
+	totalHistograms := getTotalNumberOfSlots(consolidatedHistogramDir)
+	for memInfo := range generateHistogramsFromHistogramDir(consolidatedHistogramDir) {
+		fmt.Printf("\rSlot: %04d/%d", memInfo.Slot, totalHistograms)
+		mf.nextSlotMatch(memInfo.MemInfo)
+		for _, v := range fullSimulationResults {
+			v.SlotAnalyses[memInfo.Slot] = mf.analyzeSlot(memInfo.Slot, v.AcceptableMissRatio)
+		}
+	}
+	fmt.Printf("\n")
+	fmt.Print(fullSimulationResults)
+	return &fullSimulationResults
+}
+
+func performSimulation_old(mrcsPath string, consolidatedHistogramDir string, fromAcceptableMissRatio, toAcceptableMissRatio, stepAcceptableMissRatio float32) *fullSimulationResultsStruct {
+	mf := generateConsumerProducerMatching(mrcsPath, consolidatedHistogramDir)
+	fullSimulationResults := fullSimulationResultsStruct(make([]simulationResultsStruct, 0))
+	for acceptableMissRatio := fromAcceptableMissRatio; acceptableMissRatio < toAcceptableMissRatio; acceptableMissRatio += stepAcceptableMissRatio {
 		simulationResults := simulationResultsStruct{
 			RandomSeed:          randomSeed,
 			SlotAnalyses:        make(map[int64]slotUsageStatus),
@@ -463,13 +509,12 @@ func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcc
 		sort.Ints(slots)
 		for slot := range slots {
 			fmt.Printf("\rAnalyzing Slot: %d", slot)
-			slotAnalysis := mf.analyzeSlot(int64(slot))
+			slotAnalysis := mf.analyzeSlot(int64(slot), acceptableMissRatio)
 			simulationResults.SlotAnalyses[int64(slot)] = slotAnalysis
 		}
 		fmt.Printf("\n")
 		fullSimulationResults = append(fullSimulationResults, simulationResults)
 	}
-
 	return &fullSimulationResults
 }
 

@@ -10,9 +10,8 @@ import (
 )
 
 type taskMrcInfo struct {
-	mrcID    int
-	maxMem   float32
-	localMem float32
+	mrcID  int
+	maxMem float32
 }
 
 type matchingFunction struct {
@@ -41,11 +40,13 @@ func randomizeBit() bool {
 }
 
 // mrc and other pertinent information.
-func (mf *matchingFunction) setMrc(file string) {
+func (mf *matchingFunction) setMrc(file string, histogramsDir string) {
 	mf.Mrcs = loadMrc(file)
 	tasksMaxMemUsage := make(map[TaskId.TaskId]float32)
-	for _, slotMatchingFunction := range mf.Match {
-		for task, taskMeminfo := range slotMatchingFunction.AllMemoryInfo {
+	for histogram := range generateHistogramsFromHistogramDir(histogramsDir) {
+		for _, taskMeminfo := range histogram.MemInfo {
+			task := meminfo.ToTaskId(taskMeminfo)
+			// for task, taskMeminfo := range slotMatchingFunction.AllMemoryInfo {
 			_, present := tasksMaxMemUsage[task]
 			if !present {
 				tasksMaxMemUsage[task] = float32(0)
@@ -58,19 +59,16 @@ func (mf *matchingFunction) setMrc(file string) {
 	for task, maxMem := range tasksMaxMemUsage {
 		mrcID := mf.assignMrcID()
 		mf.MrcMatching[task] = &taskMrcInfo{
-			mrcID:    mrcID,
-			maxMem:   maxMem,
-			localMem: maxMem,
+			mrcID:  mrcID,
+			maxMem: maxMem,
 		}
 	}
 }
 
-func (mf *matchingFunction) setAcceptableMissRatio(acceptableMissRatio float32) {
-	for k := range mf.MrcMatching {
-		mrcID := mf.MrcMatching[k].mrcID
-		maxMem := mf.MrcMatching[k].maxMem
-		mf.MrcMatching[k].localMem = (1.0 - mf.Mrcs[mrcID].getMissRatioFromNormalizedMissRatio(acceptableMissRatio)) * maxMem
-	}
+func (mf *matchingFunction) getLocalMem(acceptableMissRatio float32, task TaskId.TaskId) float32 {
+	mrcID := mf.MrcMatching[task].mrcID
+	maxMem := mf.MrcMatching[task].maxMem
+	return (1.0 - mf.Mrcs[mrcID].getMissRatioFromNormalizedMissRatio(acceptableMissRatio)) * maxMem
 }
 
 func (mf *matchingFunction) initSlot(s int64, slotInfo map[meminfo.MemInfo]void.Void) {
@@ -213,12 +211,16 @@ func (mf *matchingFunction) isProducer(task TaskId.TaskId, slot int64) bool {
 	return present
 }
 
+func (mf *matchingFunction) deleteSlot(slot int64) {
+	delete(mf.Match, slot)
+}
+
 func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo) {
 	slotInfo := meminfo.SliceToSet(slotInfoSlice)
 	newTasks := make([]meminfo.MemInfo, 0)
 	consumersToMatch := make([]meminfo.MemInfo, 0)
 	producersToMatch := make([]meminfo.MemInfo, 0)
-	lastSlot := int64(-1)
+	lastSlot := int64(0)
 	for k := range mf.Match {
 		if k > lastSlot {
 			lastSlot = k
@@ -260,6 +262,7 @@ func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo) {
 
 	// Next - lets assign them to each other and update the unpaired
 	mf.doMatch(consumers, producers, currentSlot)
+	mf.deleteSlot(lastSlot)
 }
 
 func (mf *matchingFunction) getProducerTotalMemorSize(producer TaskId.TaskId) float32 {
@@ -278,17 +281,23 @@ func (mf *matchingFunction) getMemoryUsage(task TaskId.TaskId, slot int64) float
 	return mf.Match[slot].AllMemoryInfo[task].AvgUsing
 }
 
-func (mf *matchingFunction) getLocalAvailableMemory(consumer TaskId.TaskId) float32 {
-	return mf.MrcMatching[consumer].localMem
+func (mf *matchingFunction) getLocalAvailableMemory(consumer TaskId.TaskId, acceptableMissRatio float32) float32 {
+	return mf.getLocalMem(acceptableMissRatio, consumer)
+	// mf.MrcMatching[consumer].localMem
 }
 
-func (mf *matchingFunction) getRemoteDemand(consumer TaskId.TaskId, slot int64) float32 {
-	return mf.getMaximalMemoryUsage(consumer, slot) - mf.getLocalAvailableMemory(consumer)
+func (mf *matchingFunction) getRemoteDemand(consumer TaskId.TaskId, slot int64, acceptableMissRatio float32) float32 {
+	maxUsageInSlot := mf.getMaximalMemoryUsage(consumer, slot)
+	localMemSize := mf.getLocalAvailableMemory(consumer, acceptableMissRatio)
+	if maxUsageInSlot-localMemSize < 0 {
+		return 0
+	}
+	return maxUsageInSlot - localMemSize
 }
 
-func (mf *matchingFunction) getConsumerRemoteUsage(consumer TaskId.TaskId, slot int64) float32 {
+func (mf *matchingFunction) getConsumerRemoteUsage(consumer TaskId.TaskId, slot int64, acceptableMissRatio float32) float32 {
 	producer, hasMatch := mf.getMatch(consumer, slot)
-	demand := mf.getRemoteDemand(consumer, slot)
+	demand := mf.getRemoteDemand(consumer, slot, acceptableMissRatio)
 	if !hasMatch {
 		return 0
 	}
@@ -296,17 +305,20 @@ func (mf *matchingFunction) getConsumerRemoteUsage(consumer TaskId.TaskId, slot 
 	if demand > supply {
 		return supply
 	}
+	if demand < 0 {
+		log.Println("Demand is negative!")
+	}
 	return demand
 }
 
-func (mf *matchingFunction) getConsumerSatisfactionRateAtSlot(consumer TaskId.TaskId, slot int64) float32 {
-	demand := mf.getRemoteDemand(consumer, slot)
+func (mf *matchingFunction) getConsumerSatisfactionRateAtSlot(consumer TaskId.TaskId, slot int64, acceptableMissRatio float32) float32 {
+	demand := mf.getRemoteDemand(consumer, slot, acceptableMissRatio)
 
 	// If there is no remote demand - we consider the consumer is fully satisfied.
 	if demand <= float32(0) {
 		return 1
 	}
-	actualUsage := mf.getConsumerRemoteUsage(consumer, slot)
+	actualUsage := mf.getConsumerRemoteUsage(consumer, slot, acceptableMissRatio)
 	return actualUsage / demand
 }
 
@@ -322,8 +334,8 @@ func (mf *matchingFunction) getMrc(task TaskId.TaskId) *mrc {
 // 5. Calculate the normalized available memory as "1  - normalized_missed_memory"
 // 4. With the missing memory we want to know how much misses are experienced when this amount of memory is missing.
 // 	this is done using the mrc.
-func (mf *matchingFunction) getConsumerMissRatioAtSlot(consumer TaskId.TaskId, slot int64) float32 {
-	missAmount := mf.getRemoteDemand(consumer, slot) - mf.getConsumerRemoteUsage(consumer, slot)
+func (mf *matchingFunction) getConsumerMissRatioAtSlot(consumer TaskId.TaskId, slot int64, acceptableMissRatio float32) float32 {
+	missAmount := mf.getRemoteDemand(consumer, slot, acceptableMissRatio) - mf.getConsumerRemoteUsage(consumer, slot, acceptableMissRatio)
 	if missAmount < 0 {
 		missAmount = 0.0
 	}
@@ -337,15 +349,18 @@ func (mf *matchingFunction) getConsumerMissRatioAtSlot(consumer TaskId.TaskId, s
 	return mf.getMrc(consumer).getMissRatioFromNormalizedAvailableMemory(normalizedAvailableMemory)
 }
 
-func (mf *matchingFunction) getProducerUtilizationRateAtSlot(producer TaskId.TaskId, slot int64) float32 {
+func (mf *matchingFunction) getProducerUtilizationRateAtSlot(producer TaskId.TaskId, slot int64, acceptableMissRatio float32) float32 {
 	match, has_match := mf.getMatch(producer, slot)
 	if !has_match {
 		return 0
 	}
-	usage := mf.getConsumerRemoteUsage(match, slot)
+	usage := mf.getConsumerRemoteUsage(match, slot, acceptableMissRatio)
 	supply := mf.getProducerSupply(producer, slot)
 	if supply <= 0 {
 		return float32(1.0)
+	}
+	if usage < 0 {
+		log.Println("Usage is negative!!!")
 	}
 	return usage / mf.getProducerSupply(producer, slot)
 }
@@ -358,24 +373,24 @@ type slotUsageStatus struct {
 	AverageMissRatio float32
 }
 
-func (mf *matchingFunction) analyzeSlot(slot int64) slotUsageStatus {
+func (mf *matchingFunction) analyzeSlot(slot int64, acceptableMissRatio float32) slotUsageStatus {
 	res := slotUsageStatus{}
 	sumSatisfactionRate := float32(0)
 	countSatisfactionRate := 0
 	missRatioSum := float32(0)
 	missRatioCount := 0
 	for c := range mf.Match[slot].ConsumerMatch {
-		res.Demand += mf.getRemoteDemand(c, slot)
-		sumSatisfactionRate += mf.getConsumerSatisfactionRateAtSlot(c, slot)
+		res.Demand += mf.getRemoteDemand(c, slot, acceptableMissRatio)
+		sumSatisfactionRate += mf.getConsumerSatisfactionRateAtSlot(c, slot, acceptableMissRatio)
 		countSatisfactionRate++
-		missRatioSum += mf.getConsumerMissRatioAtSlot(c, slot)
+		missRatioSum += mf.getConsumerMissRatioAtSlot(c, slot, acceptableMissRatio)
 		missRatioCount++
 	}
 	for c := range mf.Match[slot].ConsumerNoMatch {
-		res.Demand += mf.getRemoteDemand(c, slot)
-		sumSatisfactionRate += mf.getConsumerSatisfactionRateAtSlot(c, slot)
+		res.Demand += mf.getRemoteDemand(c, slot, acceptableMissRatio)
+		sumSatisfactionRate += mf.getConsumerSatisfactionRateAtSlot(c, slot, acceptableMissRatio)
 		countSatisfactionRate++
-		missRatioSum += mf.getConsumerMissRatioAtSlot(c, slot)
+		missRatioSum += mf.getConsumerMissRatioAtSlot(c, slot, acceptableMissRatio)
 		missRatioCount++
 	}
 	res.SatisfactionRate = sumSatisfactionRate / float32(countSatisfactionRate)
@@ -385,7 +400,7 @@ func (mf *matchingFunction) analyzeSlot(slot int64) slotUsageStatus {
 	utilizationSum := float32(0)
 	for p := range mf.Match[slot].ProducerMatch {
 		res.Supply += mf.getProducerSupply(p, slot)
-		utilizationSum += mf.getProducerUtilizationRateAtSlot(p, slot)
+		utilizationSum += mf.getProducerUtilizationRateAtSlot(p, slot, acceptableMissRatio)
 		utilizationCount++
 	}
 	for p := range mf.Match[slot].ProducerNoMatch {
