@@ -186,27 +186,18 @@ func splitHistogram(splitSize int64, hist *usageHistogram, outputChannels []chan
 }
 
 func doWriter(ch chan *memInfoWithSlot, outputDir string, wg *sync.WaitGroup, slotsPerFile int64) {
-	files := make(map[int64]*json.Encoder)
-	underlyingFiles := make([]*gzip.Writer, 0)
 	for m := range ch {
 		fileID := m.Slot / slotsPerFile
-		w, present := files[fileID]
-		if !present {
-			filePath := path.Join(outputDir, histogramPartPrefix+strconv.Itoa(int(fileID))+".json.gz")
-			newFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
-			if err != nil {
-				log.Panicln("Failed to create file. ", filePath, err)
-			}
-			log.Println("WRITER, created new file", filePath)
-			gzipWriter := gzip.NewWriter(newFile)
-			files[fileID] = json.NewEncoder(gzipWriter)
-			underlyingFiles = append(underlyingFiles, gzipWriter)
-			w = files[fileID]
+		filePath := path.Join(outputDir, histogramPartPrefix+strconv.Itoa(int(fileID))+".json.gz")
+		newFile, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			log.Panicln("Failed to create file. ", filePath, err)
 		}
+		gzipWriter := gzip.NewWriter(newFile)
+		w := json.NewEncoder(gzipWriter)
 		w.Encode(m)
-	}
-	for i := range underlyingFiles {
-		underlyingFiles[i].Close()
+		gzipWriter.Close()
+		newFile.Close()
 	}
 	wg.Done()
 }
@@ -539,7 +530,7 @@ func main() {
 	stepAcceptableMissRatio := float32(*argsParsed.stepAcceptableMissRatio)
 	simulationResultsOutputPath := *argsParsed.resultsOutputPath
 	mrcPath := *argsParsed.mrcPath
-	// generateMemoryHistogram(rawDataPath, consolidatedOutputDir)
+	generateMemoryHistogram(rawDataPath, consolidatedOutputDir)
 	results := performSimulation(mrcPath, consolidatedOutputDir, float32(fromAcceptableMissRatio), float32(toAcceptableMissRatio), float32(stepAcceptableMissRatio))
 	marshalSimulationResult(results, simulationResultsOutputPath)
 	// Generate data to plot supply curve
