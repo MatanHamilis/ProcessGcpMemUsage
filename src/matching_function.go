@@ -215,7 +215,7 @@ func (mf *matchingFunction) deleteSlot(slot int64) {
 	delete(mf.Match, slot)
 }
 
-func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo) {
+func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo, slot int64) {
 	slotInfo := meminfo.SliceToSet(slotInfoSlice)
 	newTasks := make([]meminfo.MemInfo, 0)
 	consumersToMatch := make([]meminfo.MemInfo, 0)
@@ -226,7 +226,7 @@ func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo) {
 			lastSlot = k
 		}
 	}
-	currentSlot := lastSlot + 1
+	currentSlot := slot
 
 	mf.initSlot(currentSlot, slotInfo)
 	for c := range slotInfo {

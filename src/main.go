@@ -29,6 +29,8 @@ const (
 	consolidatedDir                 = "consolidated_histogram_dir"
 	histogramPartPrefix             = "histogram_part_"
 	honsolidatedHistogramPartPrefix = "consolidated_part_"
+	slotSamplingFreq                = 200
+	slotSize                        = 300 * 1000000
 )
 
 var randomSeed uint32
@@ -86,8 +88,10 @@ func parseInstanceUsage(histChan chan *usageHistogramKeyValuePair, f chan string
 type usageHistogram map[int64][]meminfo.MemInfo
 
 func (hp usageHistogram) add(u *google_cluster_data.InstanceUsage) {
-	const slotSize = 300 * 1000000
 	slot := *u.StartTime / slotSize
+	if slot%slotSamplingFreq != 0 {
+		return
+	}
 	v, exists := hp[slot]
 	if !exists {
 		hp[slot] = make([]meminfo.MemInfo, 0, 5)
@@ -401,11 +405,31 @@ func IsGoingToBeConsumer() chan bool {
 	return output
 }
 
+func genHistogramIdx(histogramDir string) chan int {
+	ret := make(chan int)
+	go func() {
+		c := iterateFilesInDir(histogramDir, histogramPartPrefix)
+		for f := range c {
+			b := path.Base(f)[len(histogramPartPrefix):]
+			b = b[:strings.Index(b, ".")]
+			r, err := strconv.Atoi(b)
+			if err != nil {
+				log.Panic("Strange file name here!", f)
+			}
+			ret <- r
+		}
+		close(ret)
+	}()
+
+	return ret
+}
+
 func generateHistogramsFromHistogramDir(histogramDir string) chan *memInfoWithSlot {
 	retChan := make(chan *memInfoWithSlot)
 	go func() {
-		numberOfFiles := countChanString(iterateFilesInDir(histogramDir, histogramPartPrefix))
-		for fileIdx := 0; fileIdx < numberOfFiles; fileIdx++ {
+		// numberOfFiles := countChanString(iterateFilesInDir(histogramDir, histogramPartPrefix))
+		// for fileIdx := 0; fileIdx < numberOfFiles; fileIdx++ {
+		for fileIdx := range genHistogramIdx(histogramDir) {
 			fileName := histogramPartPrefix + strconv.Itoa(fileIdx) + ".json.gz"
 			filePath := path.Join(histogramDir, fileName)
 			fileHist := unmarshalHistogramFile(filePath)
@@ -473,13 +497,12 @@ func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcc
 	totalHistograms := getTotalNumberOfSlots(consolidatedHistogramDir)
 	for memInfo := range generateHistogramsFromHistogramDir(consolidatedHistogramDir) {
 		fmt.Printf("\rSlot: %04d/%d", memInfo.Slot, totalHistograms)
-		mf.nextSlotMatch(memInfo.MemInfo)
+		mf.nextSlotMatch(memInfo.MemInfo, memInfo.Slot)
 		for _, v := range fullSimulationResults {
 			v.SlotAnalyses[memInfo.Slot] = mf.analyzeSlot(memInfo.Slot, v.AcceptableMissRatio)
 		}
 	}
 	fmt.Printf("\n")
-	fmt.Print(fullSimulationResults)
 	return &fullSimulationResults
 }
 
@@ -530,7 +553,7 @@ func main() {
 	stepAcceptableMissRatio := float32(*argsParsed.stepAcceptableMissRatio)
 	simulationResultsOutputPath := *argsParsed.resultsOutputPath
 	mrcPath := *argsParsed.mrcPath
-	generateMemoryHistogram(rawDataPath, consolidatedOutputDir)
+	// generateMemoryHistogram(rawDataPath, consolidatedOutputDir)
 	results := performSimulation(mrcPath, consolidatedOutputDir, float32(fromAcceptableMissRatio), float32(toAcceptableMissRatio), float32(stepAcceptableMissRatio))
 	marshalSimulationResult(results, simulationResultsOutputPath)
 	// Generate data to plot supply curve
