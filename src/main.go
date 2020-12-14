@@ -227,7 +227,7 @@ func sendMemInfoToWriters(histChan chan *usageHistogramKeyValuePair, numberOfWri
 }
 
 func generateHistParts(histChan chan *usageHistogramKeyValuePair, outputDir string) {
-	const slotsPerSplit = 100
+	const slotsPerSplit = 1
 	const wgSize = 10
 	numberOfWriters := int64(multithreadingFactor * 2)
 	var wg sync.WaitGroup
