@@ -97,6 +97,9 @@ func (mf *matchingFunction) setMrc(file string, histogramsDir string) {
 }
 
 func (mf *matchingFunction) getLocalMem(acceptableMissRatio float32, task TaskId.TaskId) float32 {
+	if mf.MrcMatching[task] == nil {
+		log.Println("This is nil task", task)
+	}
 	mrcID := mf.MrcMatching[task].mrcID
 	maxMem := mf.MrcMatching[task].maxMem
 	return (1.0 - mf.Mrcs[mrcID].getMissRatioFromNormalizedMissRatio(acceptableMissRatio)) * maxMem

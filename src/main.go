@@ -429,27 +429,55 @@ func genHistogramIdx(histogramDir string) chan int {
 	return ret
 }
 
+func histogramGenerator(histogramDir string, idx chan int, memInfo chan *memInfoWithSlot, wg *sync.WaitGroup) {
+	for fileIdx := range idx {
+		fileName := histogramPartPrefix + strconv.Itoa(fileIdx) + ".json.gz"
+		filePath := path.Join(histogramDir, fileName)
+		fileHist := unmarshalHistogramFile(filePath)
+		histKeys := make([]int64, 0)
+		for k := range fileHist {
+			histKeys = append(histKeys, k)
+		}
+		sort.Slice(histKeys, func(i, j int) bool { return histKeys[i] < histKeys[j] })
+		i := 0
+		for _, k := range histKeys {
+			i++
+			memInfo <- fileHist[k]
+		}
+	}
+	wg.Done()
+}
+
 func generateHistogramsFromHistogramDir(histogramDir string) chan *memInfoWithSlot {
 	retChan := make(chan *memInfoWithSlot)
 	go func() {
-		// numberOfFiles := countChanString(iterateFilesInDir(histogramDir, histogramPartPrefix))
-		// for fileIdx := 0; fileIdx < numberOfFiles; fileIdx++ {
-		for fileIdx := range genHistogramIdx(histogramDir) {
-			fileName := histogramPartPrefix + strconv.Itoa(fileIdx) + ".json.gz"
-			filePath := path.Join(histogramDir, fileName)
-			fileHist := unmarshalHistogramFile(filePath)
-			histKeys := make([]int64, 0)
-			for k := range fileHist {
-				histKeys = append(histKeys, k)
-			}
-			sort.Slice(histKeys, func(i, j int) bool { return histKeys[i] < histKeys[j] })
-			i := 0
-			for _, k := range histKeys {
-				i++
-				retChan <- fileHist[k]
-			}
-
+		wg := &sync.WaitGroup{}
+		innerChan := make(chan *memInfoWithSlot)
+		wg.Add(multithreadingFactor)
+		sharedIdx := genHistogramIdx(histogramDir)
+		idx := genHistogramIdx(histogramDir)
+		for i := 0; i < multithreadingFactor; i++ {
+			go histogramGenerator(histogramDir, sharedIdx, innerChan, wg)
 		}
+		cachedVaules := make(map[int]*memInfoWithSlot)
+		for i := range idx {
+			val, present := cachedVaules[i]
+			if present {
+				retChan <- val
+				delete(cachedVaules, i)
+				continue
+			}
+			for {
+				val = <-innerChan
+				if val.Slot == int64(i) {
+					retChan <- val
+					break
+				}
+				cachedVaules[int(val.Slot)] = val
+			}
+		}
+
+		wg.Wait()
 		close(retChan)
 	}()
 
