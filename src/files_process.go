@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -88,7 +89,7 @@ func iterateFilesInDir(p string, filter string) chan string {
 func marshalObjectToJSONFile(path string, v interface{}) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
-		log.Panic("Failed to open file")
+		log.Panicln("Failed to open file", path)
 	}
 	g := gzip.NewWriter(f)
 	j := json.NewEncoder(g)
@@ -167,7 +168,7 @@ func decodeMrcJSON(jsonFileChan io.Reader) map[int]*mrc {
 func safeFileOpen(path string) *os.File {
 	file, err := os.Open(path)
 	if err != nil {
-		log.Panic("Failed to open file:", file, err)
+		log.Panic("Failed to open file:", path, err)
 	}
 	return file
 }
@@ -188,5 +189,10 @@ func unmarshalHistogramFile(path string) map[int64]*memInfoWithSlot {
 
 func marshalSimulationResult(fullSimulationResults *fullSimulationResultsStruct, path string) {
 	os.Remove(path)
+	log.Println("Marshalling results...")
 	marshalObjectToJSONFile(path, fullSimulationResults)
+	abs_path, err := filepath.Abs(path)
+	if err != nil {
+		log.Println("Results are ready! At:", abs_path)
+	}
 }

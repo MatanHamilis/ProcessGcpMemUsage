@@ -29,7 +29,7 @@ const (
 	consolidatedDir                 = "consolidated_histogram_dir"
 	histogramPartPrefix             = "histogram_part_"
 	honsolidatedHistogramPartPrefix = "consolidated_part_"
-	slotSamplingFreq                = 200
+	slotSamplingFreq                = 1
 	slotSize                        = 300 * 1000000
 )
 
@@ -409,6 +409,7 @@ func genHistogramIdx(histogramDir string) chan int {
 	ret := make(chan int)
 	go func() {
 		c := iterateFilesInDir(histogramDir, histogramPartPrefix)
+		idxs := make([]int, 0)
 		for f := range c {
 			b := path.Base(f)[len(histogramPartPrefix):]
 			b = b[:strings.Index(b, ".")]
@@ -416,7 +417,11 @@ func genHistogramIdx(histogramDir string) chan int {
 			if err != nil {
 				log.Panic("Strange file name here!", f)
 			}
-			ret <- r
+			idxs = append(idxs, r)
+		}
+		sort.Ints(idxs)
+		for _, v := range idxs {
+			ret <- v
 		}
 		close(ret)
 	}()
@@ -453,7 +458,7 @@ func generateHistogramsFromHistogramDir(histogramDir string) chan *memInfoWithSl
 
 func getTotalNumberOfSlots(histogramDir string) int {
 	num := 0
-	for _ = range generateHistogramsFromHistogramDir(histogramDir) {
+	for _ = range iterateFilesInDir(histogramDir, "") {
 		num++
 	}
 	return num
@@ -487,6 +492,7 @@ type (
 func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcceptableMissRatio, toAcceptableMissRatio, stepAcceptableMissRatio float32) *fullSimulationResultsStruct {
 	log.Println("Starting simulation")
 	mf := generateConsumerProducerMatching(mrcsPath, consolidatedHistogramDir)
+	log.Println("Generated Matching Object")
 	fullSimulationResults := fullSimulationResultsStruct(make([]simulationResultsStruct, 0))
 	for acceptableMissRatio := fromAcceptableMissRatio; acceptableMissRatio < toAcceptableMissRatio; acceptableMissRatio += stepAcceptableMissRatio {
 		fullSimulationResults = append(fullSimulationResults, simulationResultsStruct{
@@ -495,7 +501,9 @@ func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcc
 			SlotAnalyses:        make(map[int64]slotUsageStatus),
 		})
 	}
+	log.Println("Getting Total Number of Slots")
 	totalHistograms := getTotalNumberOfSlots(consolidatedHistogramDir)
+	log.Println("Slots to process:", totalHistograms)
 	isFirstSlot := true
 	for memInfo := range generateHistogramsFromHistogramDir(consolidatedHistogramDir) {
 		fmt.Printf("Slot: %04d/%d\r", memInfo.Slot, totalHistograms)
@@ -509,6 +517,7 @@ func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcc
 		}
 		mf.deleteSlot(memInfo.Slot - 1)
 	}
+	log.Println("Simulation finished", totalHistograms, "slots were analyzed successfully")
 	return &fullSimulationResults
 }
 

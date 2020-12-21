@@ -69,7 +69,9 @@ func (mf *matchingFunction) iterateProducers(slot int64) chan TaskId.TaskId {
 
 // mrc and other pertinent information.
 func (mf *matchingFunction) setMrc(file string, histogramsDir string) {
+	log.Println("Loading MRC info from:", file)
 	mf.Mrcs = loadMrc(file)
+	log.Println("Gathering MRC related information for each task")
 	tasksMaxMemUsage := make(map[TaskId.TaskId]float32)
 	for histogram := range generateHistogramsFromHistogramDir(histogramsDir) {
 		for _, taskMeminfo := range histogram.MemInfo {
@@ -84,6 +86,7 @@ func (mf *matchingFunction) setMrc(file string, histogramsDir string) {
 			}
 		}
 	}
+	log.Println("Assigning each task an MRC")
 	for task, maxMem := range tasksMaxMemUsage {
 		mrcID := mf.assignMrcID()
 		mf.MrcMatching[task] = &taskMrcInfo{
