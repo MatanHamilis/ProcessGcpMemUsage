@@ -485,6 +485,7 @@ type (
 )
 
 func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcceptableMissRatio, toAcceptableMissRatio, stepAcceptableMissRatio float32) *fullSimulationResultsStruct {
+	log.Println("Starting simulation")
 	mf := generateConsumerProducerMatching(mrcsPath, consolidatedHistogramDir)
 	fullSimulationResults := fullSimulationResultsStruct(make([]simulationResultsStruct, 0))
 	for acceptableMissRatio := fromAcceptableMissRatio; acceptableMissRatio < toAcceptableMissRatio; acceptableMissRatio += stepAcceptableMissRatio {
@@ -495,14 +496,19 @@ func performSimulation(mrcsPath string, consolidatedHistogramDir string, fromAcc
 		})
 	}
 	totalHistograms := getTotalNumberOfSlots(consolidatedHistogramDir)
+	isFirstSlot := true
 	for memInfo := range generateHistogramsFromHistogramDir(consolidatedHistogramDir) {
-		fmt.Printf("\rSlot: %04d/%d", memInfo.Slot, totalHistograms)
+		fmt.Printf("Slot: %04d/%d\r", memInfo.Slot, totalHistograms)
 		mf.nextSlotMatch(memInfo.MemInfo, memInfo.Slot)
+		if isFirstSlot {
+			isFirstSlot = false
+			continue
+		}
 		for _, v := range fullSimulationResults {
 			v.SlotAnalyses[memInfo.Slot] = mf.analyzeSlot(memInfo.Slot, v.AcceptableMissRatio)
 		}
+		mf.deleteSlot(memInfo.Slot - 1)
 	}
-	fmt.Printf("\n")
 	return &fullSimulationResults
 }
 
@@ -522,11 +528,10 @@ func performSimulation_old(mrcsPath string, consolidatedHistogramDir string, fro
 		}
 		sort.Ints(slots)
 		for slot := range slots {
-			fmt.Printf("\rAnalyzing Slot: %d", slot)
+			fmt.Printf("Analyzing Slot: %d\r", slot)
 			slotAnalysis := mf.analyzeSlot(int64(slot), acceptableMissRatio)
 			simulationResults.SlotAnalyses[int64(slot)] = slotAnalysis
 		}
-		fmt.Printf("\n")
 		fullSimulationResults = append(fullSimulationResults, simulationResults)
 	}
 	return &fullSimulationResults
@@ -553,7 +558,10 @@ func main() {
 	stepAcceptableMissRatio := float32(*argsParsed.stepAcceptableMissRatio)
 	simulationResultsOutputPath := *argsParsed.resultsOutputPath
 	mrcPath := *argsParsed.mrcPath
-	// generateMemoryHistogram(rawDataPath, consolidatedOutputDir)
+	if !isDirectory(consolidatedOutputDir) {
+		log.Println("Generating Memory Histograms... will take a while...")
+		generateMemoryHistogram(rawDataPath, consolidatedOutputDir)
+	}
 	results := performSimulation(mrcPath, consolidatedOutputDir, float32(fromAcceptableMissRatio), float32(toAcceptableMissRatio), float32(stepAcceptableMissRatio))
 	marshalSimulationResult(results, simulationResultsOutputPath)
 	// Generate data to plot supply curve

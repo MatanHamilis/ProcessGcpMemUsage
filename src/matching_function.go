@@ -39,6 +39,34 @@ func randomizeBit() bool {
 	return true
 }
 
+func (mf *matchingFunction) iterateConsumers(slot int64) chan TaskId.TaskId {
+	res := make(chan TaskId.TaskId)
+	go func() {
+		for i := range mf.Match[slot].ConsumerMatch {
+			res <- i
+		}
+		for i := range mf.Match[slot].ConsumerNoMatch {
+			res <- i
+		}
+		close(res)
+	}()
+	return res
+}
+
+func (mf *matchingFunction) iterateProducers(slot int64) chan TaskId.TaskId {
+	res := make(chan TaskId.TaskId)
+	go func() {
+		for i := range mf.Match[slot].ProducerMatch {
+			res <- i
+		}
+		for i := range mf.Match[slot].ProducerNoMatch {
+			res <- i
+		}
+		close(res)
+	}()
+	return res
+}
+
 // mrc and other pertinent information.
 func (mf *matchingFunction) setMrc(file string, histogramsDir string) {
 	mf.Mrcs = loadMrc(file)
@@ -212,7 +240,9 @@ func (mf *matchingFunction) isProducer(task TaskId.TaskId, slot int64) bool {
 }
 
 func (mf *matchingFunction) deleteSlot(slot int64) {
-	delete(mf.Match, slot)
+	if mf.hasSlot(slot) {
+		delete(mf.Match, slot)
+	}
 }
 
 func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo, slot int64) {
@@ -262,7 +292,6 @@ func (mf *matchingFunction) nextSlotMatch(slotInfoSlice []meminfo.MemInfo, slot 
 
 	// Next - lets assign them to each other and update the unpaired
 	mf.doMatch(consumers, producers, currentSlot)
-	mf.deleteSlot(lastSlot)
 }
 
 func (mf *matchingFunction) getProducerTotalMemorSize(producer TaskId.TaskId) float32 {
@@ -293,6 +322,30 @@ func (mf *matchingFunction) getRemoteDemand(consumer TaskId.TaskId, slot int64, 
 		return 0
 	}
 	return maxUsageInSlot - localMemSize
+}
+
+func (mf *matchingFunction) getMatchedConsumerCount(slot int64) int {
+	return len(mf.Match[slot].ConsumerMatch)
+}
+
+func (mf *matchingFunction) getUnmatchedConsumerCount(slot int64) int {
+	return len(mf.Match[slot].ConsumerNoMatch)
+}
+
+func (mf *matchingFunction) getMatchedProducerCount(slot int64) int {
+	return len(mf.Match[slot].ProducerMatch)
+}
+
+func (mf *matchingFunction) getUnmatchedProducerCount(slot int64) int {
+	return len(mf.Match[slot].ProducerNoMatch)
+}
+
+func (mf *matchingFunction) getConsumerCount(slot int64) int {
+	return mf.getMatchedConsumerCount(slot) + mf.getUnmatchedConsumerCount(slot)
+}
+
+func (mf *matchingFunction) getProducerCount(slot int64) int {
+	return mf.getMatchedProducerCount(slot) + mf.getUnmatchedProducerCount(slot)
 }
 
 func (mf *matchingFunction) getConsumerRemoteUsage(consumer TaskId.TaskId, slot int64, acceptableMissRatio float32) float32 {
@@ -366,11 +419,19 @@ func (mf *matchingFunction) getProducerUtilizationRateAtSlot(producer TaskId.Tas
 }
 
 type slotUsageStatus struct {
-	Demand           float32
-	Supply           float32
-	SatisfactionRate float32
-	UtilizationRate  float32
-	AverageMissRatio float32
+	Demand             float32
+	Supply             float32
+	SatisfactionRate   float32
+	UtilizationRate    float32
+	AverageMissRatio   float32
+	ProducersLeft      int
+	ConsumersLeft      int
+	ProducersJoined    int
+	ConsumersJoined    int
+	TotalConsumers     int
+	TotalProducers     int
+	UnmatchedConsumers int
+	UnmatchedProducers int
 }
 
 func (mf *matchingFunction) analyzeSlot(slot int64, acceptableMissRatio float32) slotUsageStatus {
@@ -408,6 +469,30 @@ func (mf *matchingFunction) analyzeSlot(slot int64, acceptableMissRatio float32)
 		utilizationCount++
 	}
 	res.UtilizationRate = utilizationSum / float32(utilizationCount)
+	res.TotalConsumers = mf.getConsumerCount(slot)
+	res.TotalProducers = mf.getProducerCount(slot)
+	res.UnmatchedConsumers = mf.getUnmatchedConsumerCount(slot)
+	res.UnmatchedProducers = mf.getUnmatchedProducerCount(slot)
+	for c := range mf.iterateConsumers(slot) {
+		if !mf.isConsumer(c, slot-1) {
+			res.ConsumersJoined++
+		}
+	}
+	for c := range mf.iterateConsumers(slot - 1) {
+		if !mf.isConsumer(c, slot) {
+			res.ConsumersLeft++
+		}
+	}
+	for p := range mf.iterateProducers(slot) {
+		if !mf.isProducer(p, slot-1) {
+			res.ProducersJoined++
+		}
+	}
+	for p := range mf.iterateProducers(slot - 1) {
+		if !mf.isProducer(p, slot) {
+			res.ProducersLeft++
+		}
+	}
 
 	return res
 }
