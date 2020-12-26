@@ -15,7 +15,8 @@ logging.basicConfig(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", "-v", action="count", default=0)
-    subparsers = parser.add_subparsers(help="sub-command help")
+    subparsers = parser.add_subparsers(help="sub-command help", dest="cmd")
+    subparsers.required = True
     download_parser = subparsers.add_parser("download")
     download_parser.add_argument("--dest-dir", required=False, default=".")
     download_parser.add_argument("--count", required=True, type=int, default=".")
@@ -32,7 +33,6 @@ def main() -> None:
         logging.getLogger().setLevel(logging.INFO)
     elif args.verbose >= 2:
         logging.getLogger().setLevel(logging.DEBUG)
-
     args.func(args)
 
 
