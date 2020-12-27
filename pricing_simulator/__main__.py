@@ -1,7 +1,7 @@
 import argparse
 import logging
-from . import download
-from . import analyze
+from pricing_simulator.download.download import do_download as _do_download
+from pricing_simulator.analyze.analyze import do_analyze as _do_analyze
 import sys
 
 
@@ -27,6 +27,7 @@ def main() -> None:
 
     analyze_parser = subparsers.add_parser("analyze")
     analyze_parser.add_argument("--cluster-data-dir", required=True, metavar="d")
+    analyze_parser.add_argument("--cache-dir", required=False, default="cache")
     analyze_parser.set_defaults(func=do_analyze)
     args = parser.parse_args()
     if args.verbose == 1:
@@ -36,18 +37,19 @@ def main() -> None:
     args.func(args)
 
 
-def do_download(args: argparse.Namespace):
+def do_download(args: argparse.Namespace) -> None:
     logging.info("COMMAND: download ")
     logging.info(f"COUNT:\t{args.count} ")
     logging.info(f"DEST DIR:\t{args.dest_dir} ")
     logging.info(f"FORCE:\t{args.force}")
-    download.do_download(args.dest_dir, args.count, args.force)
+    _do_download(args.dest_dir, args.count, args.force)
 
 
-def do_analyze(args: argparse.Namespace):
+def do_analyze(args: argparse.Namespace) -> None:
     logging.info("COMMAND: analyze")
     logging.info(f"CLUSTER DATA DIR:\t{args.cluster_data_dir}")
-    analyze.do_analyze()
+    logging.info(f"CACHE DIR:\t{args.cache_dir}")
+    _do_analyze(args.cluster_data_dir, args.cache_dir)
 
 
 if __name__ == "__main__":
