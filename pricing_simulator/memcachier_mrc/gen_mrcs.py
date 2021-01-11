@@ -25,22 +25,23 @@ class LruAccessSimulator:
     global_access_stamp: int
     keys: Dict[str, int]
     hist: List[int]
-    resolution: int
+    mem_size: float
 
     def __init__(self, app: TopApp, hist_entries: int):
         self.keys = {}
         self.hist = [0] * hist_entries
-        self.resolution = app.mem_size // hist_entries
         self.global_access_stamp = 0
         self.app_id = app.app_id
-        self.hist_entries = hist_entries
+        self.mem_size = app.mem_size
 
     def access(self, key: str, value_size: int) -> None:
         self.global_access_stamp += value_size
         if not key in self.keys:
             self.keys[key] = self.global_access_stamp
         par = self.global_access_stamp - self.keys[key]
-        hist_index = min(int(par / self.resolution), self.hist_entries - 1)
+        hist_index = min(
+            int((len(self.hist) * par) / self.mem_size), len(self.hist) - 1
+        )
         self.hist[hist_index] += 1
 
     def delete(self, key: str, value_size: int) -> None:
@@ -55,15 +56,15 @@ class LruAccessSimulator:
         del self.keys[key]
 
 
-class Mrc:
-    points: List[float]
+Mrc = List[float]
 
-    def __init__(self, lru: LruAccessSimulator):
-        access_sum = sum(lru.hist)
-        points = [access_sum]
-        for i in range(len(lru.hist)):
-            points.append(points[i] - lru.hist[i])
-        self.points = [p / access_sum for p in points]
+
+def mrc_from_lru(lru: LruAccessSimulator) -> Mrc:
+    access_sum = sum(lru.hist)
+    points = [access_sum]
+    for i in range(len(lru.hist)):
+        points.append(points[i] - lru.hist[i])
+    return [p / access_sum for p in points]
 
 
 class RequestType(enum.Enum):
@@ -93,7 +94,7 @@ class AppUsageInfo:
     def access(self, key: str, value_size: int) -> None:
         self.count += 1
         self.cur_size += value_size
-        self.max = max(self.max_size, self.cur_size)
+        self.max_size = max(self.max_size, self.cur_size)
         self.keys[key] = value_size
 
     def delete(self, key: str) -> None:
@@ -189,12 +190,14 @@ def get_top_apps(input_file: str, count: int) -> List[TopApp]:
         unit="Requests",
     ):
 
+        if r.req_type == RequestType.Delete and r.app_id in apps:
+            apps[r.app_id].delete(r.key_id)
+            continue
+        if r.val_size <= 0 or not r.req_type in [RequestType.Get, RequestType.Set]:
+            continue
         if not r.app_id in apps:
             apps[r.app_id] = AppUsageInfo(r.app_id)
-        if r.req_type in [RequestType.Get, RequestType.Set]:
-            apps[r.app_id].access(r.key_id, r.val_size)
-        elif r.req_type == RequestType.Delete:
-            apps[r.app_id].delete(r.key_id)
+        apps[r.app_id].access(r.key_id, r.val_size)
     logging.info("Sorting apps by required memory size...")
     top_apps = sorted(list(apps.values()), key=lambda x: x.count, reverse=True)
     return [
@@ -216,7 +219,7 @@ def build_mrcs(top_apps: List[TopApp], input_file: str) -> Dict[AppId, Mrc]:
     logging.info(f"Total entries to process: {total_entries}")
     lrus: Dict[AppId, LruAccessSimulator] = {}
     for t in top_apps:
-        lrus[t.app_id] = LruAccessSimulator(t.app_id, mrc_resolution)
+        lrus[t.app_id] = LruAccessSimulator(t, 200)
     for req in tqdm(
         iterable=get_top_apps_requests([t.app_id for t in top_apps], input_file),
         total=total_entries,
@@ -228,18 +231,23 @@ def build_mrcs(top_apps: List[TopApp], input_file: str) -> Dict[AppId, Mrc]:
             lrus[req.app_id].delete(req.key_id, req.val_size)
             continue
         lrus[req.app_id].access(req.key_id, req.val_size)
-    return {l: Mrc(lrus[l]) for l in lrus}
+    return {l: mrc_from_lru(lrus[l]) for l in lrus}
 
 
 def load_top_apps_cache_file(file_path: str) -> List[TopApp]:
-    with gzip.open(file_path, "r") as f:
+    with gzip.open(file_path, "rt") as f:
         obj = json.load(f)
         return [TopApp(*i) for i in obj]
 
 
 def store_top_apps_to_cache_file(file_path: str, top_apps: List[TopApp]) -> None:
-    with gzip.open(file_path, "w") as f:
-        f.write(json.dumps(top_apps).encode("utf-8"))
+    with gzip.open(file_path, "wt", encoding="UTF-8") as f:
+        json.dump(top_apps, f)
+
+
+def write_mrcs_to_file(mrcs: Dict[AppId, Mrc], output_file_path: str) -> None:
+    with gzip.open(output_file_path, "wt", encoding="UTF-8") as f:
+        json.dump(mrcs, f)
 
 
 def gen_mrc(
@@ -296,4 +304,4 @@ def gen_mrc(
             f"While {number_of_mrcs} MRCs were requested, only {len(top_apps)} can be generated from the trace"
         )
     mrcs = build_mrcs(top_apps, input_file)
-    return
+    write_mrcs_to_file(mrcs, output_file)
