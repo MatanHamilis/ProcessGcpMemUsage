@@ -8,9 +8,15 @@ import io
 import enum
 import gzip
 from tqdm import tqdm
-from typing import Iterator, List, TypeVar, Dict, Tuple
+from typing import Iterator, List, TypeVar, Dict, Tuple, NamedTuple
 
 AppId = str
+
+
+class TopApp(NamedTuple):
+    app_id: AppId
+    mem_size: int
+    access_count: int
 
 
 class LruAccessSimulator:
@@ -18,23 +24,23 @@ class LruAccessSimulator:
     app_id: AppId
     global_access_stamp: int
     keys: Dict[str, int]
-    hist: Dict[int, int]
+    hist: List[int]
+    resolution: int
 
-    def __init__(self, app_id: AppId, resolution: int):
+    def __init__(self, app: TopApp, hist_entries: int):
         self.keys = {}
-        self.hist = {}
-        self.resolution = resolution
+        self.hist = [0] * hist_entries
+        self.resolution = app.mem_size // hist_entries
         self.global_access_stamp = 0
-        self.app_id = app_id
+        self.app_id = app.app_id
+        self.hist_entries = hist_entries
 
     def access(self, key: str, value_size: int) -> None:
         self.global_access_stamp += value_size
         if not key in self.keys:
             self.keys[key] = self.global_access_stamp
         par = self.global_access_stamp - self.keys[key]
-        hist_index = int(par / self.resolution)
-        if not hist_index in self.hist:
-            self.hist[hist_index] = 0
+        hist_index = min(int(par / self.resolution), self.hist_entries - 1)
         self.hist[hist_index] += 1
 
     def delete(self, key: str, value_size: int) -> None:
@@ -47,6 +53,17 @@ class LruAccessSimulator:
             if self.keys[k] < last_timestamp:
                 self.keys[k] += value_size
         del self.keys[key]
+
+
+class Mrc:
+    points: List[float]
+
+    def __init__(self, lru: LruAccessSimulator):
+        access_sum = sum(lru.hist)
+        points = [access_sum]
+        for i in range(len(lru.hist)):
+            points.append(points[i] - lru.hist[i])
+        self.points = [p / access_sum for p in points]
 
 
 class RequestType(enum.Enum):
@@ -67,24 +84,23 @@ class AppUsageInfo:
     keys: Dict[str, int]
 
     def __init__(self, app_id: str):
+        self.app_id = app_id
         self.keys = {}
         self.cur_size = 0
         self.max_size = 0
         self.count = 0
 
     def access(self, key: str, value_size: int) -> None:
-        if key in self.keys:
-            return
-        self.keys[key] = value_size
+        self.count += 1
         self.cur_size += value_size
         self.max = max(self.max_size, self.cur_size)
-        self.count += 1
+        self.keys[key] = value_size
 
     def delete(self, key: str) -> None:
+        self.count += 1
         if not key in self.keys:
             return
         self.cur_size -= self.keys[key]
-        self.count += 1
         del self.keys[key]
 
 
@@ -164,7 +180,7 @@ def number_of_requests_in_trace(input_file: str) -> int:
     return i
 
 
-def get_top_apps(input_file: str, count: int) -> List[Tuple[AppId, int, int]]:
+def get_top_apps(input_file: str, count: int) -> List[TopApp]:
     apps: Dict[AppId, AppUsageInfo] = {}
     for r in tqdm(
         iterable=generate_requests(input_file),
@@ -173,17 +189,18 @@ def get_top_apps(input_file: str, count: int) -> List[Tuple[AppId, int, int]]:
         unit="Requests",
     ):
 
+        if not r.app_id in apps:
+            apps[r.app_id] = AppUsageInfo(r.app_id)
         if r.req_type in [RequestType.Get, RequestType.Set]:
-            if not r.app_id in apps:
-                apps[r.app_id] = AppUsageInfo(r.app_id)
             apps[r.app_id].access(r.key_id, r.val_size)
         elif r.req_type == RequestType.Delete:
-            if not r.app_id in apps:
-                continue
             apps[r.app_id].delete(r.key_id)
     logging.info("Sorting apps by required memory size...")
-    top_apps = sorted(list(apps.values()), key=lambda x: x.app_id)
-    return [(app.app_id, app.count, app.max_size) for app in top_apps]
+    top_apps = sorted(list(apps.values()), key=lambda x: x.count, reverse=True)
+    return [
+        TopApp(app_id=app.app_id, mem_size=app.max_size, access_count=app.count)
+        for app in top_apps
+    ]
 
 
 def get_top_apps_requests(top_apps: List[AppId], input_file: str) -> Iterator[Request]:
@@ -194,37 +211,35 @@ def get_top_apps_requests(top_apps: List[AppId], input_file: str) -> Iterator[Re
     )
 
 
-def build_mrcs(
-    top_apps: List[AppId], total_entries: int, input_file: str
-) -> Dict[AppId, LruAccessSimulator]:
-    mrc_resolution = 2 ** 10
+def build_mrcs(top_apps: List[TopApp], input_file: str) -> Dict[AppId, Mrc]:
+    total_entries = sum([a.access_count for a in top_apps])
+    logging.info(f"Total entries to process: {total_entries}")
     lrus: Dict[AppId, LruAccessSimulator] = {}
     for t in top_apps:
-        lrus[t] = LruAccessSimulator(t, mrc_resolution)
+        lrus[t.app_id] = LruAccessSimulator(t.app_id, mrc_resolution)
     for req in tqdm(
-        iterable=get_top_apps_requests(top_apps, input_file),
+        iterable=get_top_apps_requests([t.app_id for t in top_apps], input_file),
         total=total_entries,
         desc="Building MRCs",
         unit="requests",
         unit_scale=True,
     ):
         if req.req_type == RequestType.Delete:
-            lrus[req.app_id].delete(req.key_id, req.value_size)
+            lrus[req.app_id].delete(req.key_id, req.val_size)
             continue
-        lrus[req.app_id].access(req.key_id, req.value_size)
-    return lrus
+        lrus[req.app_id].access(req.key_id, req.val_size)
+    return {l: Mrc(lrus[l]) for l in lrus}
 
 
-def load_top_apps_cache_file(file_path: str) -> List[Tuple[AppId, int, int]]:
+def load_top_apps_cache_file(file_path: str) -> List[TopApp]:
     with gzip.open(file_path, "r") as f:
-        return json.load(f)  # type: ignore
+        obj = json.load(f)
+        return [TopApp(*i) for i in obj]
 
 
-def store_top_apps_to_cache_file(
-    file_path: str, top_apps: List[Tuple[AppId, int, int]]
-) -> None:
+def store_top_apps_to_cache_file(file_path: str, top_apps: List[TopApp]) -> None:
     with gzip.open(file_path, "w") as f:
-        json.dump(f, top_apps)  # type: ignore
+        f.write(json.dumps(top_apps).encode("utf-8"))
 
 
 def gen_mrc(
@@ -249,10 +264,11 @@ def gen_mrc(
         )
         raise ValueError(f"Output file ({output_file}) already exists")
 
-    top_apps = None
+    got_top_apps = False
     if os.path.isfile(top_apps_file):
         logging.info(f"Found top apps cache file {top_apps_file} -- loading!")
         top_apps = load_top_apps_cache_file(top_apps_file)
+        got_top_apps = True
     elif os.path.exists(top_apps_file):
         logging.error(
             f"given top apps file path ({top_apps_file}) isn't a regular file"
@@ -267,14 +283,17 @@ def gen_mrc(
             )
             raise ValueError("Input file ({input_file}) has incorrect checksum")
         logging.info("Checksum - OK!")
-    #  logging.info("Trying to estimate trace size...")
-    #  number_of_lines = number_of_requests_in_trace(input_file)
     logging.info(f"Getting top {number_of_mrcs} apps")
-    #  get_top_apps(input_file, number_of_mrcs, number_of_lines)
-    if top_apps == None:
+    if not got_top_apps:
         logging.info("Generating top apps now")
         top_apps = get_top_apps(input_file, number_of_mrcs)
         logging.info("Finished generating top apps.")
         logging.info(f"Writing top apps to file: {top_apps_file}")
         store_top_apps_to_cache_file(top_apps_file, top_apps)
+    top_apps = top_apps[:number_of_mrcs]
+    if len(top_apps) < number_of_mrcs:
+        logging.warn(
+            f"While {number_of_mrcs} MRCs were requested, only {len(top_apps)} can be generated from the trace"
+        )
+    mrcs = build_mrcs(top_apps, input_file)
     return
